@@ -45,8 +45,7 @@ def get_elapsed(u):
     pauses = u.get("total_pauses", 0)
     if u["status"] == "paused":
         pauses += now - u["pause_start"]
-    elapsed = now - u["start"] - pauses + u.get("bonus_seconds", 0)
-    return max(0, elapsed)
+    return max(0, now - u["start"] - pauses + u.get("bonus_seconds", 0))
 
 def get_pause_duration(u):
     now = datetime.utcnow().timestamp()
@@ -55,13 +54,11 @@ def get_pause_duration(u):
         total += now - u["pause_start"]
     return total
 
-# ─── Embed pointeuse (message principal avec statuts) ─────────
+# ─── Embeds ───────────────────────────────────────────────────
 async def build_pointeuse_embed(guild, data):
     embed = discord.Embed(title="🕐 POINTEUSE", color=0x1abc9c)
-
     en_service = [(uid, u) for uid, u in data.items() if u["status"] == "working"]
     en_pause = [(uid, u) for uid, u in data.items() if u["status"] == "paused"]
-
     lines = []
     for uid, u in en_service:
         member = guild.get_member(int(uid))
@@ -71,17 +68,13 @@ async def build_pointeuse_embed(guild, data):
         member = guild.get_member(int(uid))
         name = member.display_name if member else f"<@{uid}>"
         lines.append(f"⏸️ **{name}** — `{fmt(get_elapsed(u))}` *(pause: {fmt(get_pause_duration(u))})*")
-
-    if not lines:
-        embed.description = "*Personne en service actuellement*"
-    else:
-        embed.description = "\n".join(lines)
-
+    embed.description = "\n".join(lines) if lines else "*Personne en service actuellement*"
     embed.set_footer(text=f"Blaine County Sheriff Office • {datetime.utcnow().strftime('%H:%M:%S')} UTC")
     return embed
 
 async def build_gestion_embed(guild, data):
     now = datetime.utcnow()
+    cfg = load_config()
     embed = discord.Embed(title="📊 PANNEAU DE GESTION", color=0xe74c3c, timestamp=now)
 
     en_service = [(uid, u) for uid, u in data.items() if u["status"] == "working"]
@@ -123,8 +116,14 @@ async def build_gestion_embed(guild, data):
             lines.append(f"⬛ **{name}**\n┣ Dernière : `{fmt(last['duree_secondes'])}` ({last['date']})\n┗ Total : `{fmt(total_all)}`")
         embed.add_field(name="━━━ HORS SERVICE ━━━", value="\n\n".join(lines), inline=False)
 
+    # Comptage en cours
+    if cfg.get("comptage_start"):
+        debut = datetime.utcfromtimestamp(cfg["comptage_start"]).strftime("%H:%M:%S")
+        duree = fmt(now.timestamp() - cfg["comptage_start"])
+        embed.add_field(name="━━━ COMPTAGE EN COURS ━━━", value=f"▶️ Démarré à `{debut}` UTC — Durée : `{duree}`", inline=False)
+
     total_en_ligne = len(en_service) + len(en_pause)
-    embed.set_footer(text=f"👮 {total_en_ligne} agent(s) en ligne • Auto-refresh 60s")
+    embed.set_footer(text=f"👮 {total_en_ligne} agent(s) en ligne • Auto-refresh 10s")
     return embed
 
 async def refresh_pointeuse(guild, data):
@@ -170,12 +169,17 @@ class PrendreServiceView(discord.ui.View):
         if uid not in data:
             data[uid] = {"status": "off", "start": None, "pause_start": None, "total_pauses": 0, "sessions": [], "bonus_seconds": 0}
         data[uid].update({"status": "working", "start": now, "pause_start": None, "total_pauses": 0, "bonus_seconds": 0})
+        # Enregistrer le temps de début pour le comptage
+        cfg = load_config()
+        if cfg.get("comptage_start") and "comptage_sessions" not in cfg:
+            cfg["comptage_sessions"] = {}
+        if cfg.get("comptage_start"):
+            if "comptage_sessions" not in cfg:
+                cfg["comptage_sessions"] = {}
+            cfg["comptage_sessions"][uid] = {"start": now, "total": 0}
+            save_config(cfg)
         save(data)
-        # Éditer le message principal avec les boutons pause/fin
-        await interaction.response.edit_message(
-            embed=await build_pointeuse_embed(interaction.guild, data),
-            view=EnServiceView()
-        )
+        await interaction.response.edit_message(embed=await build_pointeuse_embed(interaction.guild, data), view=EnServiceView())
         await refresh_gestion(interaction.guild, data)
 
 class EnServiceView(discord.ui.View):
@@ -193,10 +197,7 @@ class EnServiceView(discord.ui.View):
         data[uid]["status"] = "paused"
         data[uid]["pause_start"] = now
         save(data)
-        await interaction.response.edit_message(
-            embed=await build_pointeuse_embed(interaction.guild, data),
-            view=EnPauseView()
-        )
+        await interaction.response.edit_message(embed=await build_pointeuse_embed(interaction.guild, data), view=EnPauseView())
         await refresh_gestion(interaction.guild, data)
 
     @discord.ui.button(label="⏹  Fin de service", style=discord.ButtonStyle.danger, custom_id="btn_fin")
@@ -219,10 +220,7 @@ class EnPauseView(discord.ui.View):
         data[uid]["pause_start"] = None
         data[uid]["status"] = "working"
         save(data)
-        await interaction.response.edit_message(
-            embed=await build_pointeuse_embed(interaction.guild, data),
-            view=EnServiceView()
-        )
+        await interaction.response.edit_message(embed=await build_pointeuse_embed(interaction.guild, data), view=EnServiceView())
         await refresh_gestion(interaction.guild, data)
 
     @discord.ui.button(label="⏹  Fin de service", style=discord.ButtonStyle.danger, custom_id="btn_fin_pause")
@@ -241,14 +239,21 @@ async def fin_service(interaction, uid_cible=None, admin=False):
     if u["status"] == "paused":
         u["total_pauses"] += now - u["pause_start"]
     total = get_elapsed(u)
+
+    # Enregistrer pour comptage
+    cfg = load_config()
+    if cfg.get("comptage_start") and "comptage_sessions" in cfg:
+        cs = cfg["comptage_sessions"]
+        if uid in cs:
+            cs[uid]["total"] += now - cs[uid]["start"]
+            cs[uid]["start"] = None
+        save_config(cfg)
+
     u["sessions"].append({"date": datetime.utcnow().strftime("%Y-%m-%d"), "duree_secondes": int(total)})
     u.update({"status": "off", "start": None, "pause_start": None, "total_pauses": 0, "bonus_seconds": 0})
     save(data)
     if not admin:
-        await interaction.response.edit_message(
-            embed=await build_pointeuse_embed(interaction.guild, data),
-            view=PrendreServiceView()
-        )
+        await interaction.response.edit_message(embed=await build_pointeuse_embed(interaction.guild, data), view=PrendreServiceView())
     await refresh_gestion(interaction.guild, data)
     return True
 
@@ -293,7 +298,7 @@ class GestionView(discord.ui.View):
             return
         await interaction.response.send_message("Sélectionne le membre :", view=SelectMembreView(options, "reprendre"), ephemeral=True)
 
-    @discord.ui.button(label="➕ Ajouter du temps", style=discord.ButtonStyle.success, custom_id="admin_add_time", row=1)
+    @discord.ui.button(label="➕ Ajouter temps", style=discord.ButtonStyle.success, custom_id="admin_add_time", row=1)
     async def add_time(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not interaction.user.guild_permissions.administrator:
             await interaction.response.send_message("❌ Admins seulement.", ephemeral=True)
@@ -305,7 +310,7 @@ class GestionView(discord.ui.View):
             return
         await interaction.response.send_message("Sélectionne le membre :", view=SelectMembreView(options, "add_time"), ephemeral=True)
 
-    @discord.ui.button(label="➖ Retirer du temps", style=discord.ButtonStyle.danger, custom_id="admin_remove_time", row=1)
+    @discord.ui.button(label="➖ Retirer temps", style=discord.ButtonStyle.danger, custom_id="admin_remove_time", row=1)
     async def remove_time(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not interaction.user.guild_permissions.administrator:
             await interaction.response.send_message("❌ Admins seulement.", ephemeral=True)
@@ -316,6 +321,77 @@ class GestionView(discord.ui.View):
             await interaction.response.send_message("Personne en service.", ephemeral=True)
             return
         await interaction.response.send_message("Sélectionne le membre :", view=SelectMembreView(options, "remove_time"), ephemeral=True)
+
+    @discord.ui.button(label="▶ Démarrer comptage", style=discord.ButtonStyle.success, custom_id="admin_comptage_start", row=2)
+    async def comptage_start(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message("❌ Admins seulement.", ephemeral=True)
+            return
+        cfg = load_config()
+        if cfg.get("comptage_start"):
+            await interaction.response.send_message("⚠️ Un comptage est déjà en cours.", ephemeral=True)
+            return
+        now = datetime.utcnow().timestamp()
+        data = load()
+        # Enregistrer tous ceux déjà en service au moment du démarrage
+        sessions = {}
+        for uid, u in data.items():
+            if u["status"] in ("working", "paused"):
+                sessions[uid] = {"start": now, "total": 0}
+        cfg["comptage_start"] = now
+        cfg["comptage_sessions"] = sessions
+        save_config(cfg)
+        await interaction.response.send_message(f"▶️ Comptage démarré à `{datetime.utcnow().strftime('%H:%M:%S')}` UTC", ephemeral=True)
+        await refresh_gestion(interaction.guild, data)
+
+    @discord.ui.button(label="⏹ Terminer comptage", style=discord.ButtonStyle.danger, custom_id="admin_comptage_end", row=2)
+    async def comptage_end(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message("❌ Admins seulement.", ephemeral=True)
+            return
+        cfg = load_config()
+        if not cfg.get("comptage_start"):
+            await interaction.response.send_message("⚠️ Aucun comptage en cours.", ephemeral=True)
+            return
+        now = datetime.utcnow().timestamp()
+        data = load()
+        sessions = cfg.get("comptage_sessions", {})
+
+        # Ajouter le temps des gens encore en service
+        for uid, u in data.items():
+            if u["status"] in ("working", "paused") and uid in sessions:
+                if sessions[uid].get("start"):
+                    sessions[uid]["total"] += now - sessions[uid]["start"]
+
+        debut = datetime.utcfromtimestamp(cfg["comptage_start"]).strftime("%d/%m/%Y %H:%M")
+        fin_str = datetime.utcnow().strftime("%d/%m/%Y %H:%M")
+        duree_totale = fmt(now - cfg["comptage_start"])
+
+        embed = discord.Embed(
+            title="📋 RÉSUMÉ DU COMPTAGE",
+            description=f"**Du** `{debut}` **au** `{fin_str}` UTC\n**Durée totale :** `{duree_totale}`",
+            color=0xf39c12,
+            timestamp=datetime.utcnow()
+        )
+
+        if sessions:
+            lines = []
+            sorted_sessions = sorted(sessions.items(), key=lambda x: x[1]["total"], reverse=True)
+            for uid, s in sorted_sessions:
+                member = interaction.guild.get_member(int(uid))
+                name = member.display_name if member else f"ID:{uid}"
+                lines.append(f"👮 **{name}** — `{fmt(s['total'])}`")
+            embed.add_field(name="Temps de service par agent", value="\n".join(lines), inline=False)
+        else:
+            embed.description += "\n\n*Aucun agent enregistré pendant ce comptage.*"
+
+        # Reset comptage
+        cfg.pop("comptage_start", None)
+        cfg.pop("comptage_sessions", None)
+        save_config(cfg)
+
+        await interaction.response.send_message(embed=embed)
+        await refresh_gestion(interaction.guild, data)
 
     def _get_options(self, guild, data, statuts):
         options = []
@@ -348,14 +424,12 @@ class SelectMembreView(discord.ui.View):
                 await interaction.response.send_message(f"✅ Service de **{name}** coupé.", ephemeral=True)
             else:
                 await interaction.response.send_message(f"⚠️ **{name}** n'est pas en service.", ephemeral=True)
-
         elif self.action == "pause":
             data[uid]["status"] = "paused"
             data[uid]["pause_start"] = now
             save(data)
             await interaction.response.send_message(f"⏸️ **{name}** mis en pause.", ephemeral=True)
             await refresh_all(interaction.guild)
-
         elif self.action == "reprendre":
             data[uid]["total_pauses"] += now - data[uid]["pause_start"]
             data[uid]["pause_start"] = None
@@ -363,10 +437,8 @@ class SelectMembreView(discord.ui.View):
             save(data)
             await interaction.response.send_message(f"🟢 **{name}** a repris le service.", ephemeral=True)
             await refresh_all(interaction.guild)
-
         elif self.action in ("add_time", "remove_time"):
-            modal = TempsModal(uid=uid, name=name, action=self.action)
-            await interaction.response.send_modal(modal)
+            await interaction.response.send_modal(TempsModal(uid=uid, name=name, action=self.action))
 
 class TempsModal(discord.ui.Modal):
     def __init__(self, uid, name, action):
@@ -381,7 +453,6 @@ class TempsModal(discord.ui.Modal):
 
     async def on_submit(self, interaction: discord.Interaction):
         data = load()
-        uid = self.uid
         try:
             h = int(self.heures.value or 0)
             m = int(self.minutes.value or 0)
@@ -389,13 +460,13 @@ class TempsModal(discord.ui.Modal):
             await interaction.response.send_message("⚠️ Valeurs invalides.", ephemeral=True)
             return
         seconds = h * 3600 + m * 60
-        if "bonus_seconds" not in data[uid]:
-            data[uid]["bonus_seconds"] = 0
+        if "bonus_seconds" not in data[self.uid]:
+            data[self.uid]["bonus_seconds"] = 0
         if self.action == "add_time":
-            data[uid]["bonus_seconds"] += seconds
+            data[self.uid]["bonus_seconds"] += seconds
             msg = f"➕ `{h}h{m:02d}m` ajouté"
         else:
-            data[uid]["bonus_seconds"] -= seconds
+            data[self.uid]["bonus_seconds"] -= seconds
             msg = f"➖ `{h}h{m:02d}m` retiré"
         save(data)
         await interaction.response.send_message(msg, ephemeral=True)
@@ -426,7 +497,7 @@ async def gestion_cmd(ctx):
     save_config(cfg)
     await ctx.message.delete()
 
-@tasks.loop(seconds=60)
+@tasks.loop(seconds=10)
 async def auto_refresh():
     for guild in bot.guilds:
         await refresh_all(guild)
