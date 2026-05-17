@@ -6,6 +6,7 @@ import os
 
 TOKEN = os.environ["TOKEN"]
 DATA_FILE = "pointages.json"
+CONFIG_FILE = "config.json"
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -23,6 +24,16 @@ def save(data):
     with open(DATA_FILE, "w") as f:
         json.dump(data, f, indent=2)
 
+def load_config():
+    if os.path.exists(CONFIG_FILE):
+        with open(CONFIG_FILE, "r") as f:
+            return json.load(f)
+    return {}
+
+def save_config(cfg):
+    with open(CONFIG_FILE, "w") as f:
+        json.dump(cfg, f)
+
 def fmt(seconds):
     seconds = int(seconds)
     h = seconds // 3600
@@ -37,59 +48,98 @@ def get_elapsed(u):
         pauses += now - u["pause_start"]
     return now - u["start"] - pauses
 
-# ─── Embed principal ──────────────────────────────────────────
-async def build_embed(guild, data):
-    embed = discord.Embed(title="📋 Pointeuse — Service en cours", color=0x2ecc71)
-    en_service = [(uid, u) for uid, u in data.items() if u["status"] in ("working", "paused")]
-    if not en_service:
-        embed.description = "*Personne en service actuellement*"
-    else:
+def get_pause_duration(u):
+    now = datetime.utcnow().timestamp()
+    total = u.get("total_pauses", 0)
+    if u["status"] == "paused":
+        total += now - u["pause_start"]
+    return total
+
+# ─── Embeds ───────────────────────────────────────────────────
+async def build_pointeuse_embed():
+    embed = discord.Embed(
+        title="🕐 POINTEUSE",
+        description="Clique sur le bouton ci-dessous pour prendre ou gérer ton service.",
+        color=0x1abc9c
+    )
+    embed.set_footer(text="Blaine County Sheriff Office • Pointeuse")
+    return embed
+
+async def build_gestion_embed(guild, data):
+    now = datetime.utcnow()
+    embed = discord.Embed(
+        title="📊 PANNEAU DE GESTION — SERVICE EN COURS",
+        color=0xe74c3c,
+        timestamp=now
+    )
+
+    en_service = [(uid, u) for uid, u in data.items() if u["status"] == "working"]
+    en_pause = [(uid, u) for uid, u in data.items() if u["status"] == "paused"]
+    hors_service = [(uid, u) for uid, u in data.items() if u["status"] == "off" and u.get("sessions")]
+
+    # EN SERVICE
+    if en_service:
         lines = []
         for uid, u in en_service:
             member = guild.get_member(int(uid))
-            name = member.display_name if member else f"<@{uid}>"
-            elapsed = fmt(get_elapsed(u))
-            if u["status"] == "working":
-                lines.append(f"🟢 **{name}** — {elapsed}")
-            else:
-                lines.append(f"⏸️ **{name}** — {elapsed} *(pause)*")
-        embed.description = "\n".join(lines)
-    embed.set_footer(text=f"Mis à jour: {datetime.utcnow().strftime('%H:%M:%S')} UTC")
+            name = member.display_name if member else f"ID:{uid}"
+            elapsed = get_elapsed(u)
+            total_all = sum(s["duree_secondes"] for s in u.get("sessions", [])) + elapsed
+            lines.append(f"🟢 **{name}**\n┣ En service depuis : `{fmt(elapsed)}`\n┗ Temps total : `{fmt(total_all)}`")
+        embed.add_field(name="━━━ EN SERVICE ━━━", value="\n\n".join(lines), inline=False)
+    else:
+        embed.add_field(name="━━━ EN SERVICE ━━━", value="*Personne en service*", inline=False)
+
+    # EN PAUSE
+    if en_pause:
+        lines = []
+        for uid, u in en_pause:
+            member = guild.get_member(int(uid))
+            name = member.display_name if member else f"ID:{uid}"
+            elapsed = get_elapsed(u)
+            pause_dur = get_pause_duration(u)
+            total_all = sum(s["duree_secondes"] for s in u.get("sessions", [])) + elapsed
+            lines.append(f"⏸️ **{name}**\n┣ Pause depuis : `{fmt(pause_dur)}`\n┣ Temps travaillé : `{fmt(elapsed)}`\n┗ Temps total : `{fmt(total_all)}`")
+        embed.add_field(name="━━━ EN PAUSE ━━━", value="\n\n".join(lines), inline=False)
+    else:
+        embed.add_field(name="━━━ EN PAUSE ━━━", value="*Personne en pause*", inline=False)
+
+    # HORS SERVICE (dernières sessions)
+    if hors_service:
+        lines = []
+        for uid, u in hors_service[-5:]:
+            member = guild.get_member(int(uid))
+            name = member.display_name if member else f"ID:{uid}"
+            last = u["sessions"][-1]
+            total_all = sum(s["duree_secondes"] for s in u.get("sessions", []))
+            lines.append(f"⬛ **{name}**\n┣ Dernière session : `{fmt(last['duree_secondes'])}` ({last['date']})\n┗ Temps total : `{fmt(total_all)}`")
+        embed.add_field(name="━━━ HORS SERVICE ━━━", value="\n\n".join(lines), inline=False)
+
+    total_en_ligne = len(en_service) + len(en_pause)
+    embed.set_footer(text=f"👮 {total_en_ligne} agent(s) en ligne • Mise à jour automatique")
     return embed
 
-# ─── Config ───────────────────────────────────────────────────
-CONFIG_FILE = "config.json"
-
-def load_config():
-    if os.path.exists(CONFIG_FILE):
-        with open(CONFIG_FILE, "r") as f:
-            return json.load(f)
-    return {}
-
-def save_config(cfg):
-    with open(CONFIG_FILE, "w") as f:
-        json.dump(cfg, f)
-
-async def refresh_board(guild, data):
+# ─── Refresh ──────────────────────────────────────────────────
+async def refresh_all(guild):
+    data = load()
     cfg = load_config()
-    if not cfg.get("channel_id") or not cfg.get("board_msg_id"):
-        return
-    channel = guild.get_channel(cfg["channel_id"])
-    if not channel:
-        return
-    try:
-        msg = await channel.fetch_message(cfg["board_msg_id"])
-        embed = await build_embed(guild, data)
-        await msg.edit(embed=embed)
-    except:
-        pass
+
+    # Refresh gestion
+    if cfg.get("gestion_channel_id") and cfg.get("gestion_msg_id"):
+        ch = guild.get_channel(cfg["gestion_channel_id"])
+        if ch:
+            try:
+                msg = await ch.fetch_message(cfg["gestion_msg_id"])
+                await msg.edit(embed=await build_gestion_embed(guild, data))
+            except:
+                pass
 
 # ─── Vues ─────────────────────────────────────────────────────
 class PrendreServiceView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    @discord.ui.button(label="▶ Prendre service", style=discord.ButtonStyle.success, custom_id="btn_prendre")
+    @discord.ui.button(label="▶  Prendre service", style=discord.ButtonStyle.success, custom_id="btn_prendre")
     async def prendre(self, interaction: discord.Interaction, button: discord.ui.Button):
         data = load()
         uid = str(interaction.user.id)
@@ -97,20 +147,25 @@ class PrendreServiceView(discord.ui.View):
         if uid in data and data[uid]["status"] != "off":
             await interaction.response.send_message("⚠️ Tu es déjà en service !", ephemeral=True)
             return
-        data[uid] = {"status": "working", "start": now, "pause_start": None, "total_pauses": 0}
+        if uid not in data:
+            data[uid] = {"status": "off", "start": None, "pause_start": None, "total_pauses": 0, "sessions": []}
+        data[uid]["status"] = "working"
+        data[uid]["start"] = now
+        data[uid]["pause_start"] = None
+        data[uid]["total_pauses"] = 0
         save(data)
-        view = EnServiceView()
         await interaction.response.send_message(
-            f"✅ Service démarré à **{datetime.utcnow().strftime('%H:%M')}** UTC", view=view, ephemeral=True
+            f"✅ Service démarré à **{datetime.utcnow().strftime('%H:%M')}** UTC",
+            view=EnServiceView(), ephemeral=True
         )
-        await refresh_board(interaction.guild, data)
+        await refresh_all(interaction.guild)
 
 
 class EnServiceView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    @discord.ui.button(label="⏸ Pause", style=discord.ButtonStyle.primary, custom_id="btn_pause")
+    @discord.ui.button(label="⏸  Pause", style=discord.ButtonStyle.primary, custom_id="btn_pause")
     async def pause(self, interaction: discord.Interaction, button: discord.ui.Button):
         data = load()
         uid = str(interaction.user.id)
@@ -122,9 +177,9 @@ class EnServiceView(discord.ui.View):
         data[uid]["pause_start"] = now
         save(data)
         await interaction.response.edit_message(content="⏸️ En pause.", view=EnPauseView())
-        await refresh_board(interaction.guild, data)
+        await refresh_all(interaction.guild)
 
-    @discord.ui.button(label="⏹ Fin de service", style=discord.ButtonStyle.danger, custom_id="btn_fin")
+    @discord.ui.button(label="⏹  Fin de service", style=discord.ButtonStyle.danger, custom_id="btn_fin")
     async def fin(self, interaction: discord.Interaction, button: discord.ui.Button):
         await fin_service(interaction)
 
@@ -133,7 +188,7 @@ class EnPauseView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    @discord.ui.button(label="▶ Reprendre", style=discord.ButtonStyle.secondary, custom_id="btn_reprendre")
+    @discord.ui.button(label="▶  Reprendre", style=discord.ButtonStyle.secondary, custom_id="btn_reprendre")
     async def reprendre(self, interaction: discord.Interaction, button: discord.ui.Button):
         data = load()
         uid = str(interaction.user.id)
@@ -146,9 +201,9 @@ class EnPauseView(discord.ui.View):
         data[uid]["status"] = "working"
         save(data)
         await interaction.response.edit_message(content="🟢 Service repris.", view=EnServiceView())
-        await refresh_board(interaction.guild, data)
+        await refresh_all(interaction.guild)
 
-    @discord.ui.button(label="⏹ Fin de service", style=discord.ButtonStyle.danger, custom_id="btn_fin_pause")
+    @discord.ui.button(label="⏹  Fin de service", style=discord.ButtonStyle.danger, custom_id="btn_fin_pause")
     async def fin(self, interaction: discord.Interaction, button: discord.ui.Button):
         await fin_service(interaction)
 
@@ -164,41 +219,40 @@ async def fin_service(interaction):
     if u["status"] == "paused":
         u["total_pauses"] += now - u["pause_start"]
     total = get_elapsed(u)
+    u["sessions"].append({"date": datetime.utcnow().strftime("%Y-%m-%d"), "duree_secondes": int(total)})
     u["status"] = "off"
     u["start"] = None
     u["pause_start"] = None
     u["total_pauses"] = 0
     save(data)
     await interaction.response.edit_message(content=f"✅ Fin de service — Temps: **{fmt(total)}**", view=None)
-    await refresh_board(interaction.guild, data)
+    await refresh_all(interaction.guild)
 
-# ─── Commande admin ───────────────────────────────────────────
+# ─── Commandes ────────────────────────────────────────────────
 @bot.command(name="pointeuse")
 @commands.has_permissions(administrator=True)
-async def pointeuse(ctx):
-    data = load()
-    embed = await build_embed(ctx.guild, data)
-    board_msg = await ctx.send(embed=embed)
-    await ctx.send("👇 Clique pour prendre/gérer ton service :", view=PrendreServiceView())
-    save_config({"channel_id": ctx.channel.id, "board_msg_id": board_msg.id})
+async def pointeuse_cmd(ctx):
+    embed = await build_pointeuse_embed()
+    await ctx.send(embed=embed, view=PrendreServiceView())
     await ctx.message.delete()
 
-# ─── Auto-refresh toutes les 60s ──────────────────────────────
+@bot.command(name="gestion")
+@commands.has_permissions(administrator=True)
+async def gestion_cmd(ctx):
+    data = load()
+    embed = await build_gestion_embed(ctx.guild, data)
+    msg = await ctx.send(embed=embed)
+    cfg = load_config()
+    cfg["gestion_channel_id"] = ctx.channel.id
+    cfg["gestion_msg_id"] = msg.id
+    save_config(cfg)
+    await ctx.message.delete()
+
+# ─── Auto-refresh 60s ─────────────────────────────────────────
 @tasks.loop(seconds=60)
 async def auto_refresh():
-    cfg = load_config()
-    if not cfg.get("channel_id") or not cfg.get("board_msg_id"):
-        return
     for guild in bot.guilds:
-        channel = guild.get_channel(cfg["channel_id"])
-        if channel:
-            try:
-                msg = await channel.fetch_message(cfg["board_msg_id"])
-                data = load()
-                embed = await build_embed(guild, data)
-                await msg.edit(embed=embed)
-            except:
-                pass
+        await refresh_all(guild)
 
 @bot.event
 async def on_ready():
