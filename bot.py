@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 import json
 import os
 
-TOKEN = "MTUwNTYwOTU5OTQxODYzNDQ4Mg.GOtH2-.PusRDYMrFAST1eleab6sx0x6Sm5fSLBX3HGrek"
+TOKEN = os.environ["TOKEN"]
 DATA_FILE = "pointages.json"
 
 intents = discord.Intents.default()
