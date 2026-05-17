@@ -133,7 +133,7 @@ async def refresh_pointeuse(guild, data):
         if ch:
             try:
                 msg = await ch.fetch_message(cfg["pointeuse_msg_id"])
-                await msg.edit(embed=await build_pointeuse_embed(guild, data), view=PrendreServiceView())
+                await msg.edit(embed=await build_pointeuse_embed(guild, data))
             except:
                 pass
 
