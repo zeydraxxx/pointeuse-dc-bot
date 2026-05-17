@@ -191,8 +191,12 @@ class EnServiceView(discord.ui.View):
         data = load()
         uid = str(interaction.user.id)
         now = datetime.utcnow().timestamp()
-        if uid not in data or data[uid]["status"] != "working":
-            await interaction.response.send_message("⚠️ Tu n'es pas en service.", ephemeral=True)
+        # Si admin a coupé entre temps
+        if uid not in data or data[uid]["status"] == "off":
+            await interaction.response.edit_message(embed=await build_pointeuse_embed(interaction.guild, data), view=PrendreServiceView())
+            return
+        if data[uid]["status"] != "working":
+            await interaction.response.send_message("⚠️ Tu n'es pas en service actif.", ephemeral=True)
             return
         data[uid]["status"] = "paused"
         data[uid]["pause_start"] = now
@@ -202,6 +206,11 @@ class EnServiceView(discord.ui.View):
 
     @discord.ui.button(label="⏹  Fin de service", style=discord.ButtonStyle.danger, custom_id="btn_fin")
     async def fin(self, interaction: discord.Interaction, button: discord.ui.Button):
+        data = load()
+        uid = str(interaction.user.id)
+        if uid not in data or data[uid]["status"] == "off":
+            await interaction.response.edit_message(embed=await build_pointeuse_embed(interaction.guild, data), view=PrendreServiceView())
+            return
         await fin_service(interaction)
 
 class EnPauseView(discord.ui.View):
@@ -213,7 +222,10 @@ class EnPauseView(discord.ui.View):
         data = load()
         uid = str(interaction.user.id)
         now = datetime.utcnow().timestamp()
-        if uid not in data or data[uid]["status"] != "paused":
+        if uid not in data or data[uid]["status"] == "off":
+            await interaction.response.edit_message(embed=await build_pointeuse_embed(interaction.guild, data), view=PrendreServiceView())
+            return
+        if data[uid]["status"] != "paused":
             await interaction.response.send_message("⚠️ Tu n'es pas en pause.", ephemeral=True)
             return
         data[uid]["total_pauses"] += now - data[uid]["pause_start"]
@@ -225,6 +237,11 @@ class EnPauseView(discord.ui.View):
 
     @discord.ui.button(label="⏹  Fin de service", style=discord.ButtonStyle.danger, custom_id="btn_fin_pause")
     async def fin(self, interaction: discord.Interaction, button: discord.ui.Button):
+        data = load()
+        uid = str(interaction.user.id)
+        if uid not in data or data[uid]["status"] == "off":
+            await interaction.response.edit_message(embed=await build_pointeuse_embed(interaction.guild, data), view=PrendreServiceView())
+            return
         await fin_service(interaction)
 
 async def fin_service(interaction, uid_cible=None, admin=False):
