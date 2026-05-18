@@ -65,17 +65,23 @@ PERM_KEYS = {
 }
 
 def has_perm(interaction, perm):
-    if interaction.user.guild_permissions.administrator:
-        return True
     cfg = load_config()
     role_ids = cfg.get(f"roles_{perm}", [])
+    # Si aucun rôle configuré, admins seulement
+    if not role_ids:
+        return interaction.user.guild_permissions.administrator
+    # Si strict_mode OFF : admins passent toujours
+    if not cfg.get("strict_mode") and interaction.user.guild_permissions.administrator:
+        return True
     return any(r.id in role_ids for r in interaction.user.roles)
 
 def has_perm_ctx(ctx, perm):
-    if ctx.author.guild_permissions.administrator:
-        return True
     cfg = load_config()
     role_ids = cfg.get(f"roles_{perm}", [])
+    if not role_ids:
+        return ctx.author.guild_permissions.administrator
+    if not cfg.get("strict_mode") and ctx.author.guild_permissions.administrator:
+        return True
     return any(r.id in role_ids for r in ctx.author.roles)
 
 async def send_log(guild, message):
@@ -474,7 +480,16 @@ class ConfigMenuView(discord.ui.View):
     async def cfg_commande(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self._show_role_select(interaction, "commande", "💬 Rôle Commande — Utiliser !pointeuse et !gestion")
 
-    @discord.ui.button(label="🗑️ Reset tout", style=discord.ButtonStyle.danger, row=3)
+    @discord.ui.button(label="🔒 Mode strict", style=discord.ButtonStyle.secondary, row=3)
+    async def cfg_strict(self, interaction: discord.Interaction, button: discord.ui.Button):
+        cfg = load_config()
+        cfg["strict_mode"] = not cfg.get("strict_mode", False)
+        save_config(cfg)
+        state = "activé — les admins doivent aussi avoir les rôles" if cfg["strict_mode"] else "désactivé — les admins passent toujours"
+        await interaction.response.send_message(f"🔒 Mode strict **{state}**.", ephemeral=True)
+        await refresh_gestion(interaction.guild, load())
+
+    @discord.ui.button(label="🗑️ Reset tout", style=discord.ButtonStyle.danger, row=4)
     async def cfg_reset(self, interaction: discord.Interaction, button: discord.ui.Button):
         cfg = load_config()
         for key in list(PERM_KEYS.keys()):
@@ -485,20 +500,43 @@ class ConfigMenuView(discord.ui.View):
         await refresh_gestion(interaction.guild, load())
 
     async def _show_role_select(self, interaction, perm_key, title):
+        await interaction.response.send_modal(RoleSearchModal(perm_key, title))
+
+class RoleSearchModal(discord.ui.Modal):
+    def __init__(self, perm_key, title):
+        super().__init__(title=f"Recherche rôle — {title[:40]}")
+        self.perm_key = perm_key
+        self.perm_title = title
+        self.recherche = discord.ui.TextInput(
+            label="Nom du rôle (vide = afficher tous)",
+            placeholder="Ex: Shérif, Deputy...",
+            required=False,
+            max_length=50
+        )
+        self.add_item(self.recherche)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        query = self.recherche.value.strip().lower()
         roles = [r for r in interaction.guild.roles if not r.is_default() and not r.managed]
-        roles = roles[:25]
+        if query:
+            roles = [r for r in roles if query in r.name.lower()]
         if not roles:
-            await interaction.response.send_message("Aucun rôle disponible.", ephemeral=True)
+            await interaction.response.send_message("❌ Aucun rôle trouvé.", ephemeral=True)
             return
-        options = [discord.SelectOption(label=r.name, value=str(r.id)) for r in roles]
+        roles = roles[:25]
         cfg = load_config()
-        current_ids = cfg.get(f"roles_{perm_key}", [])
-        # Marquer les rôles déjà sélectionnés
-        for opt in options:
-            if int(opt.value) in current_ids:
+        current_ids = cfg.get(f"roles_{self.perm_key}", [])
+        options = []
+        for r in roles:
+            opt = discord.SelectOption(label=r.name, value=str(r.id))
+            if r.id in current_ids:
                 opt.description = "✅ Actif"
-        view = RoleSelectView(perm_key, title, options)
-        await interaction.response.send_message(f"**{title}**\nSélectionne les rôles (plusieurs possibles) :", view=view, ephemeral=True)
+            options.append(opt)
+        view = RoleSelectView(self.perm_key, self.perm_title, options)
+        await interaction.response.send_message(
+            f"**{self.perm_title}**\nSélectionne les rôles (plusieurs possibles) :",
+            view=view, ephemeral=True
+        )
 
 class LogChannelModal(discord.ui.Modal, title="Salon des logs"):
     valeur = discord.ui.TextInput(label="ID du salon", placeholder="Clic droit sur le salon → Copier l'ID (vide pour désactiver)", required=False, max_length=30)
