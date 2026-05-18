@@ -54,14 +54,6 @@ def get_pause_duration(u):
         total += now - u["pause_start"]
     return total
 
-def get_view_for_status(status):
-    if status == "working":
-        return EnServiceView()
-    elif status == "paused":
-        return EnPauseView()
-    else:
-        return PrendreServiceView()
-
 # ─── Embeds ───────────────────────────────────────────────────
 async def build_pointeuse_embed(guild, data):
     embed = discord.Embed(title="🕐 POINTEUSE", color=0x1abc9c)
@@ -84,7 +76,6 @@ async def build_gestion_embed(guild, data):
     now = datetime.utcnow()
     cfg = load_config()
     embed = discord.Embed(title="📊 PANNEAU DE GESTION", color=0xe74c3c, timestamp=now)
-
     en_service = [(uid, u) for uid, u in data.items() if u["status"] == "working"]
     en_pause = [(uid, u) for uid, u in data.items() if u["status"] == "paused"]
     hors_service = [(uid, u) for uid, u in data.items() if u["status"] == "off" and u.get("sessions")]
@@ -107,9 +98,8 @@ async def build_gestion_embed(guild, data):
             member = guild.get_member(int(uid))
             name = member.display_name if member else f"ID:{uid}"
             elapsed = get_elapsed(u)
-            pause_dur = get_pause_duration(u)
             total_all = sum(s["duree_secondes"] for s in u.get("sessions", [])) + elapsed
-            lines.append(f"⏸️ **{name}**\n┣ Pause : `{fmt(pause_dur)}`\n┣ Travaillé : `{fmt(elapsed)}`\n┗ Total : `{fmt(total_all)}`")
+            lines.append(f"⏸️ **{name}**\n┣ Pause : `{fmt(get_pause_duration(u))}`\n┣ Travaillé : `{fmt(elapsed)}`\n┗ Total : `{fmt(total_all)}`")
         embed.add_field(name="━━━ EN PAUSE ━━━", value="\n\n".join(lines), inline=False)
     else:
         embed.add_field(name="━━━ EN PAUSE ━━━", value="*Personne*", inline=False)
@@ -132,6 +122,87 @@ async def build_gestion_embed(guild, data):
     total_en_ligne = len(en_service) + len(en_pause)
     embed.set_footer(text=f"👮 {total_en_ligne} agent(s) en ligne • Auto-refresh 3s")
     return embed
+
+# ─── Vue pointeuse dynamique selon statut ────────────────────
+# Un seul message public — les boutons affichés dépendent du statut de QUI clique
+class PointeuseView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="▶ Prendre service", style=discord.ButtonStyle.success, custom_id="pt_prendre", row=0)
+    async def prendre(self, interaction: discord.Interaction, button: discord.ui.Button):
+        data = load()
+        uid = str(interaction.user.id)
+        now = datetime.utcnow().timestamp()
+        if uid in data and data[uid]["status"] != "off":
+            await interaction.response.send_message("⚠️ Tu es déjà en service !", ephemeral=True)
+            return
+        if uid not in data:
+            data[uid] = {"status": "off", "start": None, "pause_start": None, "total_pauses": 0, "sessions": [], "bonus_seconds": 0}
+        data[uid].update({"status": "working", "start": now, "pause_start": None, "total_pauses": 0, "bonus_seconds": 0})
+        cfg = load_config()
+        if cfg.get("comptage_start"):
+            if "comptage_sessions" not in cfg:
+                cfg["comptage_sessions"] = {}
+            cfg["comptage_sessions"][uid] = {"start": now, "total": 0}
+            save_config(cfg)
+        save(data)
+        await interaction.response.send_message(f"✅ Service démarré.", ephemeral=True)
+        await refresh_all(interaction.guild)
+
+    @discord.ui.button(label="⏸ Pause", style=discord.ButtonStyle.primary, custom_id="pt_pause", row=0)
+    async def pause(self, interaction: discord.Interaction, button: discord.ui.Button):
+        data = load()
+        uid = str(interaction.user.id)
+        now = datetime.utcnow().timestamp()
+        if data.get(uid, {}).get("status") != "working":
+            await interaction.response.send_message("⚠️ Tu n'es pas en service.", ephemeral=True)
+            return
+        data[uid]["status"] = "paused"
+        data[uid]["pause_start"] = now
+        save(data)
+        await interaction.response.send_message("⏸️ Pause enregistrée.", ephemeral=True)
+        await refresh_all(interaction.guild)
+
+    @discord.ui.button(label="▶ Reprendre", style=discord.ButtonStyle.secondary, custom_id="pt_reprendre", row=0)
+    async def reprendre(self, interaction: discord.Interaction, button: discord.ui.Button):
+        data = load()
+        uid = str(interaction.user.id)
+        now = datetime.utcnow().timestamp()
+        if data.get(uid, {}).get("status") != "paused":
+            await interaction.response.send_message("⚠️ Tu n'es pas en pause.", ephemeral=True)
+            return
+        data[uid]["total_pauses"] += now - data[uid]["pause_start"]
+        data[uid]["pause_start"] = None
+        data[uid]["status"] = "working"
+        save(data)
+        await interaction.response.send_message("🟢 Service repris.", ephemeral=True)
+        await refresh_all(interaction.guild)
+
+    @discord.ui.button(label="⏹ Fin de service", style=discord.ButtonStyle.danger, custom_id="pt_fin", row=0)
+    async def fin(self, interaction: discord.Interaction, button: discord.ui.Button):
+        data = load()
+        uid = str(interaction.user.id)
+        now = datetime.utcnow().timestamp()
+        if data.get(uid, {}).get("status") == "off":
+            await interaction.response.send_message("⚠️ Tu n'es pas en service.", ephemeral=True)
+            return
+        u = data[uid]
+        if u["status"] == "paused":
+            u["total_pauses"] += now - u["pause_start"]
+        total = get_elapsed(u)
+        cfg = load_config()
+        if cfg.get("comptage_start") and "comptage_sessions" in cfg:
+            cs = cfg["comptage_sessions"]
+            if uid in cs and cs[uid].get("start"):
+                cs[uid]["total"] += now - cs[uid]["start"]
+                cs[uid]["start"] = None
+            save_config(cfg)
+        u["sessions"].append({"date": datetime.utcnow().strftime("%Y-%m-%d"), "duree_secondes": int(total)})
+        u.update({"status": "off", "start": None, "pause_start": None, "total_pauses": 0, "bonus_seconds": 0})
+        save(data)
+        await interaction.response.send_message(f"✅ Fin de service — Temps: **{fmt(total)}**", ephemeral=True)
+        await refresh_all(interaction.guild)
 
 # ─── Refresh ──────────────────────────────────────────────────
 async def refresh_pointeuse(guild, data):
@@ -160,119 +231,6 @@ async def refresh_all(guild):
     data = load()
     await refresh_pointeuse(guild, data)
     await refresh_gestion(guild, data)
-
-# ─── Vues membres ─────────────────────────────────────────────
-class PrendreServiceView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
-
-    @discord.ui.button(label="▶  Prendre service", style=discord.ButtonStyle.success, custom_id="btn_prendre")
-    async def prendre(self, interaction: discord.Interaction, button: discord.ui.Button):
-        data = load()
-        uid = str(interaction.user.id)
-        now = datetime.utcnow().timestamp()
-        if uid in data and data[uid]["status"] != "off":
-            await interaction.response.send_message("⚠️ Tu es déjà en service !", ephemeral=True)
-            return
-        if uid not in data:
-            data[uid] = {"status": "off", "start": None, "pause_start": None, "total_pauses": 0, "sessions": [], "bonus_seconds": 0}
-        data[uid].update({"status": "working", "start": now, "pause_start": None, "total_pauses": 0, "bonus_seconds": 0})
-        cfg = load_config()
-        if cfg.get("comptage_start"):
-            if "comptage_sessions" not in cfg:
-                cfg["comptage_sessions"] = {}
-            cfg["comptage_sessions"][uid] = {"start": now, "total": 0}
-            save_config(cfg)
-        save(data)
-        await interaction.response.edit_message(embed=await build_pointeuse_embed(interaction.guild, data), view=EnServiceView())
-        await refresh_gestion(interaction.guild, data)
-
-class EnServiceView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
-
-    @discord.ui.button(label="⏸  Pause", style=discord.ButtonStyle.primary, custom_id="btn_pause")
-    async def pause(self, interaction: discord.Interaction, button: discord.ui.Button):
-        data = load()
-        uid = str(interaction.user.id)
-        now = datetime.utcnow().timestamp()
-        status = data.get(uid, {}).get("status", "off")
-        # Admin a changé le statut entre temps
-        if status != "working":
-            await interaction.response.edit_message(embed=await build_pointeuse_embed(interaction.guild, data), view=get_view_for_status(status))
-            return
-        data[uid]["status"] = "paused"
-        data[uid]["pause_start"] = now
-        save(data)
-        await interaction.response.edit_message(embed=await build_pointeuse_embed(interaction.guild, data), view=EnPauseView())
-        await refresh_gestion(interaction.guild, data)
-
-    @discord.ui.button(label="⏹  Fin de service", style=discord.ButtonStyle.danger, custom_id="btn_fin")
-    async def fin(self, interaction: discord.Interaction, button: discord.ui.Button):
-        data = load()
-        uid = str(interaction.user.id)
-        status = data.get(uid, {}).get("status", "off")
-        if status == "off":
-            await interaction.response.edit_message(embed=await build_pointeuse_embed(interaction.guild, data), view=PrendreServiceView())
-            return
-        await fin_service(interaction)
-
-class EnPauseView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
-
-    @discord.ui.button(label="▶  Reprendre", style=discord.ButtonStyle.secondary, custom_id="btn_reprendre")
-    async def reprendre(self, interaction: discord.Interaction, button: discord.ui.Button):
-        data = load()
-        uid = str(interaction.user.id)
-        now = datetime.utcnow().timestamp()
-        status = data.get(uid, {}).get("status", "off")
-        if status != "paused":
-            await interaction.response.edit_message(embed=await build_pointeuse_embed(interaction.guild, data), view=get_view_for_status(status))
-            return
-        data[uid]["total_pauses"] += now - data[uid]["pause_start"]
-        data[uid]["pause_start"] = None
-        data[uid]["status"] = "working"
-        save(data)
-        await interaction.response.edit_message(embed=await build_pointeuse_embed(interaction.guild, data), view=EnServiceView())
-        await refresh_gestion(interaction.guild, data)
-
-    @discord.ui.button(label="⏹  Fin de service", style=discord.ButtonStyle.danger, custom_id="btn_fin_pause")
-    async def fin(self, interaction: discord.Interaction, button: discord.ui.Button):
-        data = load()
-        uid = str(interaction.user.id)
-        status = data.get(uid, {}).get("status", "off")
-        if status == "off":
-            await interaction.response.edit_message(embed=await build_pointeuse_embed(interaction.guild, data), view=PrendreServiceView())
-            return
-        await fin_service(interaction)
-
-async def fin_service(interaction, uid_cible=None, admin=False):
-    data = load()
-    uid = uid_cible if uid_cible else str(interaction.user.id)
-    now = datetime.utcnow().timestamp()
-    if uid not in data or data[uid]["status"] == "off":
-        if not admin:
-            await interaction.response.send_message("⚠️ Tu n'es pas en service.", ephemeral=True)
-        return False
-    u = data[uid]
-    if u["status"] == "paused":
-        u["total_pauses"] += now - u["pause_start"]
-    total = get_elapsed(u)
-    cfg = load_config()
-    if cfg.get("comptage_start") and "comptage_sessions" in cfg:
-        cs = cfg["comptage_sessions"]
-        if uid in cs and cs[uid].get("start"):
-            cs[uid]["total"] += now - cs[uid]["start"]
-            cs[uid]["start"] = None
-        save_config(cfg)
-    u["sessions"].append({"date": datetime.utcnow().strftime("%Y-%m-%d"), "duree_secondes": int(total)})
-    u.update({"status": "off", "start": None, "pause_start": None, "total_pauses": 0, "bonus_seconds": 0})
-    save(data)
-    if not admin:
-        await interaction.response.edit_message(embed=await build_pointeuse_embed(interaction.guild, data), view=PrendreServiceView())
-    await refresh_gestion(interaction.guild, data)
-    return True
 
 # ─── Vue Gestion admin ────────────────────────────────────────
 class GestionView(discord.ui.View):
@@ -321,7 +279,6 @@ class GestionView(discord.ui.View):
             await interaction.response.send_message("❌ Admins seulement.", ephemeral=True)
             return
         data = load()
-        # Tous les membres connus (en service, pause, hors service)
         options = self._get_options_all(interaction.guild, data)
         if not options:
             await interaction.response.send_message("Aucun membre enregistré.", ephemeral=True)
@@ -419,7 +376,7 @@ class GestionView(discord.ui.View):
             name = member.display_name if member else f"ID:{uid}"
             label = {"working": "🟢 En service", "paused": "⏸️ En pause", "off": "⬛ Hors service"}.get(u["status"], "")
             options.append(discord.SelectOption(label=name, value=uid, description=label))
-        return options[:25]  # Discord limite à 25 options
+        return options[:25]
 
 class SelectMembreView(discord.ui.View):
     def __init__(self, options, action):
@@ -437,17 +394,31 @@ class SelectMembreView(discord.ui.View):
         name = member.display_name if member else f"ID:{uid}"
 
         if self.action == "fin":
-            ok = await fin_service(interaction, uid_cible=uid, admin=True)
-            if ok:
-                await interaction.response.send_message(f"✅ Service de **{name}** coupé.", ephemeral=True)
-            else:
+            u = data.get(uid)
+            if not u or u["status"] == "off":
                 await interaction.response.send_message(f"⚠️ **{name}** n'est pas en service.", ephemeral=True)
+                return
+            if u["status"] == "paused":
+                u["total_pauses"] += now - u["pause_start"]
+            total = get_elapsed(u)
+            cfg = load_config()
+            if cfg.get("comptage_start") and "comptage_sessions" in cfg:
+                cs = cfg["comptage_sessions"]
+                if uid in cs and cs[uid].get("start"):
+                    cs[uid]["total"] += now - cs[uid]["start"]
+                    cs[uid]["start"] = None
+                save_config(cfg)
+            u["sessions"].append({"date": datetime.utcnow().strftime("%Y-%m-%d"), "duree_secondes": int(total)})
+            u.update({"status": "off", "start": None, "pause_start": None, "total_pauses": 0, "bonus_seconds": 0})
+            save(data)
+            await interaction.response.send_message(f"✅ Service de **{name}** coupé — `{fmt(total)}`.", ephemeral=True)
+            await refresh_all(interaction.guild)
 
         elif self.action == "pause":
             data[uid]["status"] = "paused"
             data[uid]["pause_start"] = now
             save(data)
-            await interaction.response.send_message(f"⏸️ **{name}** mis en pause. Il verra le changement à son prochain clic.", ephemeral=True)
+            await interaction.response.send_message(f"⏸️ **{name}** mis en pause.", ephemeral=True)
             await refresh_all(interaction.guild)
 
         elif self.action == "reprendre":
@@ -455,7 +426,7 @@ class SelectMembreView(discord.ui.View):
             data[uid]["pause_start"] = None
             data[uid]["status"] = "working"
             save(data)
-            await interaction.response.send_message(f"🟢 **{name}** a repris le service. Il verra le changement à son prochain clic.", ephemeral=True)
+            await interaction.response.send_message(f"🟢 **{name}** a repris le service.", ephemeral=True)
             await refresh_all(interaction.guild)
 
         elif self.action in ("add_time", "remove_time"):
@@ -486,24 +457,20 @@ class TempsModal(discord.ui.Modal):
             data[uid] = {"status": "off", "start": None, "pause_start": None, "total_pauses": 0, "sessions": [], "bonus_seconds": 0}
         if "bonus_seconds" not in data[uid]:
             data[uid]["bonus_seconds"] = 0
-        # Pour hors service : modifier directement la dernière session
         if data[uid]["status"] == "off":
             if not data[uid].get("sessions"):
                 data[uid]["sessions"] = [{"date": datetime.utcnow().strftime("%Y-%m-%d"), "duree_secondes": 0}]
             if self.action == "add_time":
                 data[uid]["sessions"][-1]["duree_secondes"] += seconds
-                msg = f"➕ `{h}h{m:02d}m` ajouté à **{self.uid}**"
             else:
                 data[uid]["sessions"][-1]["duree_secondes"] = max(0, data[uid]["sessions"][-1]["duree_secondes"] - seconds)
-                msg = f"➖ `{h}h{m:02d}m` retiré"
         else:
             if self.action == "add_time":
                 data[uid]["bonus_seconds"] += seconds
-                msg = f"➕ `{h}h{m:02d}m` ajouté"
             else:
                 data[uid]["bonus_seconds"] -= seconds
-                msg = f"➖ `{h}h{m:02d}m` retiré"
         save(data)
+        msg = f"➕ `{h}h{m:02d}m` ajouté" if self.action == "add_time" else f"➖ `{h}h{m:02d}m` retiré"
         await interaction.response.send_message(msg, ephemeral=True)
         await refresh_all(interaction.guild)
 
@@ -513,7 +480,7 @@ class TempsModal(discord.ui.Modal):
 async def pointeuse_cmd(ctx):
     data = load()
     embed = await build_pointeuse_embed(ctx.guild, data)
-    msg = await ctx.send(embed=embed, view=PrendreServiceView())
+    msg = await ctx.send(embed=embed, view=PointeuseView())
     cfg = load_config()
     cfg["pointeuse_channel_id"] = ctx.channel.id
     cfg["pointeuse_msg_id"] = msg.id
@@ -539,9 +506,7 @@ async def auto_refresh():
 
 @bot.event
 async def on_ready():
-    bot.add_view(PrendreServiceView())
-    bot.add_view(EnServiceView())
-    bot.add_view(EnPauseView())
+    bot.add_view(PointeuseView())
     bot.add_view(GestionView())
     auto_refresh.start()
     print(f"✅ Bot connecté : {bot.user}")
