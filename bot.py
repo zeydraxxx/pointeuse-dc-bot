@@ -480,6 +480,27 @@ class ConfigMenuView(discord.ui.View):
     async def cfg_commande(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self._show_role_select(interaction, "commande", "💬 Rôle Commande", "Peut utiliser !pointeuse et !gestion pour déployer les panneaux.")
 
+    @discord.ui.button(label="🔒 Mode strict", style=discord.ButtonStyle.secondary, custom_id="cfg_strict", row=3)
+    async def cfg_strict(self, interaction: discord.Interaction, button: discord.ui.Button):
+        cfg = load_config()
+        cfg["strict_mode"] = not cfg.get("strict_mode", False)
+        save_config(cfg)
+        state = "activé" if cfg["strict_mode"] else "désactivé"
+        await interaction.response.send_message(f"🔒 Mode strict **{state}**.", ephemeral=True)
+        await send_log(interaction.guild, f"🔒 **{interaction.user.display_name}** a **{state}** le mode strict.")
+        await refresh_gestion(interaction.guild, load())
+
+    @discord.ui.button(label="🗑️ Reset config", style=discord.ButtonStyle.danger, custom_id="cfg_reset", row=3)
+    async def cfg_reset(self, interaction: discord.Interaction, button: discord.ui.Button):
+        cfg = load_config()
+        for key in list(PERM_KEYS.keys()):
+            cfg.pop(f"roles_{key}", None)
+        cfg.pop("log_channel_id", None)
+        save_config(cfg)
+        await interaction.response.send_message("✅ Configuration réinitialisée.", ephemeral=True)
+        await send_log(interaction.guild, f"🗑️ **{interaction.user.display_name}** a réinitialisé toute la configuration.")
+        await refresh_gestion(interaction.guild, load())
+
     async def _show_role_select(self, interaction, perm_key, title, description=""):
         cfg = load_config()
         current_role_ids = cfg.get(f"roles_{perm_key}", [])
@@ -522,6 +543,7 @@ class LogChannelModal(discord.ui.Modal, title="Salon des logs"):
                 await interaction.response.send_message("❌ ID invalide.", ephemeral=True)
                 return
         save_config(cfg)
+        await send_log(interaction.guild, f"📋 **{interaction.user.display_name}** a modifié le salon de logs.")
         await refresh_gestion(interaction.guild, load())
 
 # ─── Select Membre & Modal Temps ──────────────────────────────
@@ -685,7 +707,7 @@ async def on_message(message):
         save_config(cfg)
         await message.delete()
         await delete_config_msg()
-        await message.channel.send(f"✅ Rôles **{title}** supprimés.")
+        await send_log(message.guild, f"⚙️ **{message.author.display_name}** a supprimé les rôles de **{title}**.")
         await refresh_gestion(message.guild, load())
         return
 
@@ -694,7 +716,6 @@ async def on_message(message):
         save_config(cfg)
         await message.delete()
         await delete_config_msg()
-        await message.channel.send("❌ Aucun rôle mentionné. Configuration annulée.")
         return
 
     cfg[f"roles_{perm_key}"] = role_ids
@@ -702,7 +723,7 @@ async def on_message(message):
     names = ", ".join(f"`{r.name}`" for r in message.role_mentions)
     await message.delete()
     await delete_config_msg()
-    await message.channel.send(f"✅ **{title}** → {names}")
+    await send_log(message.guild, f"⚙️ **{message.author.display_name}** a configuré **{title}** → {names}.")
     await refresh_gestion(message.guild, load())
     await bot.process_commands(message)
 
