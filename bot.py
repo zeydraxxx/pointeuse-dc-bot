@@ -458,27 +458,103 @@ class ConfigMenuView(discord.ui.View):
 
     @discord.ui.button(label="🔧 Rôle Gestion", style=discord.ButtonStyle.secondary, row=0)
     async def cfg_gestion(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self._show_role_select(interaction, "gestion", "🔧 Rôle Gestion — Couper/Pause/Reprendre")
+        await interaction.response.send_message(
+            "## 🔧 Rôle Gestion
+"
+            "Les membres avec ce rôle peuvent :
+"
+            "- ⏹️ Couper le service de quelqu'un
+"
+            "- ⏸️ Mettre quelqu'un en pause
+"
+            "- ▶️ Reprendre le service de quelqu'un
 
-    @discord.ui.button(label="⏱️ Rôle Temps", style=discord.ButtonStyle.secondary, row=1)
+"
+            "*Ce rôle est pour les superviseurs/gradés qui gèrent les agents en direct.*",
+            view=ConfirmRoleView("gestion", "🔧 Rôle Gestion"), ephemeral=True
+        )
+
+    @discord.ui.button(label="⏱️ Rôle Temps", style=discord.ButtonStyle.secondary, row=0)
     async def cfg_temps(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self._show_role_select(interaction, "temps", "⏱️ Rôle Temps — Ajouter/Retirer du temps")
+        await interaction.response.send_message(
+            "## ⏱️ Rôle Temps
+"
+            "Les membres avec ce rôle peuvent :
+"
+            "- ➕ Ajouter du temps à quelqu'un
+"
+            "- ➖ Retirer du temps à quelqu'un
+
+"
+            "*Ce rôle est pour les RH/responsables qui corrigent les temps de service.*",
+            view=ConfirmRoleView("temps", "⏱️ Rôle Temps"), ephemeral=True
+        )
 
     @discord.ui.button(label="📊 Rôle Comptage", style=discord.ButtonStyle.secondary, row=1)
     async def cfg_comptage(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self._show_role_select(interaction, "comptage", "📊 Rôle Comptage — Démarrer/Terminer comptage")
+        await interaction.response.send_message(
+            "## 📊 Rôle Comptage
+"
+            "Les membres avec ce rôle peuvent :
+"
+            "- ▶️ Démarrer un comptage (enregistre qui travaille sur une période)
+"
+            "- ⏹️ Terminer le comptage et voir le résumé de chaque agent
 
-    @discord.ui.button(label="⚙️ Rôle Configuration", style=discord.ButtonStyle.secondary, row=2)
+"
+            "*Ce rôle est pour les responsables qui font des bilans de service.*",
+            view=ConfirmRoleView("comptage", "📊 Rôle Comptage"), ephemeral=True
+        )
+
+    @discord.ui.button(label="⚙️ Rôle Configuration", style=discord.ButtonStyle.secondary, row=1)
     async def cfg_configuration(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self._show_role_select(interaction, "configuration", "⚙️ Rôle Configuration — Accès config")
+        await interaction.response.send_message(
+            "## ⚙️ Rôle Configuration
+"
+            "Les membres avec ce rôle peuvent :
+"
+            "- ⚙️ Accéder au menu de configuration
+"
+            "- Configurer les salons, les rôles, le mode strict
+
+"
+            "*Ce rôle est réservé aux administrateurs du bot. Donne-le avec précaution.*",
+            view=ConfirmRoleView("configuration", "⚙️ Rôle Configuration"), ephemeral=True
+        )
 
     @discord.ui.button(label="🕐 Rôle Pointeuse", style=discord.ButtonStyle.secondary, row=2)
     async def cfg_pointeuse(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self._show_role_select(interaction, "pointeuse", "🕐 Rôle Pointeuse — Utiliser les boutons pointeuse")
+        await interaction.response.send_message(
+            "## 🕐 Rôle Pointeuse
+"
+            "Les membres avec ce rôle peuvent :
+"
+            "- ▶️ Prendre leur service
+"
+            "- ⏸️ Mettre en pause / reprendre
+"
+            "- ⏹️ Terminer leur service
 
-    @discord.ui.button(label="💬 Rôle Commande", style=discord.ButtonStyle.secondary, row=3)
+"
+            "*Si aucun rôle configuré ici, TOUT LE MONDE peut utiliser la pointeuse.*",
+            view=ConfirmRoleView("pointeuse", "🕐 Rôle Pointeuse"), ephemeral=True
+        )
+
+    @discord.ui.button(label="💬 Rôle Commande", style=discord.ButtonStyle.secondary, row=2)
     async def cfg_commande(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self._show_role_select(interaction, "commande", "💬 Rôle Commande — Utiliser !pointeuse et !gestion")
+        await interaction.response.send_message(
+            "## 💬 Rôle Commande
+"
+            "Les membres avec ce rôle peuvent :
+"
+            "- Utiliser `!pointeuse` pour créer le panneau pointeuse
+"
+            "- Utiliser `!gestion` pour créer le panneau de gestion
+
+"
+            "*Ce rôle est pour ceux qui déploient les panneaux dans les salons.*",
+            view=ConfirmRoleView("commande", "💬 Rôle Commande"), ephemeral=True
+        )
 
     @discord.ui.button(label="🔒 Mode strict", style=discord.ButtonStyle.secondary, row=3)
     async def cfg_strict(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -501,6 +577,16 @@ class ConfigMenuView(discord.ui.View):
 
     async def _show_role_select(self, interaction, perm_key, title):
         await interaction.response.send_modal(RoleSearchModal(perm_key, title))
+
+class ConfirmRoleView(discord.ui.View):
+    def __init__(self, perm_key, title):
+        super().__init__(timeout=60)
+        self.perm_key = perm_key
+        self.title = title
+
+    @discord.ui.button(label="⚙️ Configurer ce rôle", style=discord.ButtonStyle.primary)
+    async def configurer(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(RoleSearchModal(self.perm_key, self.title))
 
 class RoleSearchModal(discord.ui.Modal):
     def __init__(self, perm_key, title):
