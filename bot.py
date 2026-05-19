@@ -458,61 +458,29 @@ class ConfigMenuView(discord.ui.View):
 
     @discord.ui.button(label="🔧 Rôle Gestion", style=discord.ButtonStyle.secondary, row=0)
     async def cfg_gestion(self, interaction: discord.Interaction, button: discord.ui.Button):
-        msg = ("## 🔧 Rôle Gestion\n\n"
-               "Les membres avec ce rôle peuvent :\n"
-               "- ⏹️ Couper le service de quelqu'un\n"
-               "- ⏸️ Mettre quelqu'un en pause\n"
-               "- ▶️ Reprendre le service de quelqu'un\n\n"
-               "*Pour les superviseurs/gradés qui gèrent les agents en direct.*")
-        await interaction.response.send_message(msg, view=ConfirmRoleView("gestion", "🔧 Rôle Gestion"), ephemeral=True)
+        await self._show_role_select(interaction, "gestion", "🔧 Rôle Gestion", "Peut couper/mettre en pause/reprendre le service des agents.")
 
     @discord.ui.button(label="⏱️ Rôle Temps", style=discord.ButtonStyle.secondary, row=0)
     async def cfg_temps(self, interaction: discord.Interaction, button: discord.ui.Button):
-        msg = ("## ⏱️ Rôle Temps\n\n"
-               "Les membres avec ce rôle peuvent :\n"
-               "- ➕ Ajouter du temps à quelqu'un\n"
-               "- ➖ Retirer du temps à quelqu'un\n\n"
-               "*Pour les RH/responsables qui corrigent les temps de service.*")
-        await interaction.response.send_message(msg, view=ConfirmRoleView("temps", "⏱️ Rôle Temps"), ephemeral=True)
+        await self._show_role_select(interaction, "temps", "⏱️ Rôle Temps", "Peut ajouter ou retirer du temps à un agent.")
 
     @discord.ui.button(label="📊 Rôle Comptage", style=discord.ButtonStyle.secondary, row=1)
     async def cfg_comptage(self, interaction: discord.Interaction, button: discord.ui.Button):
-        msg = ("## 📊 Rôle Comptage\n\n"
-               "Les membres avec ce rôle peuvent :\n"
-               "- ▶️ Démarrer un comptage (enregistre qui travaille sur une période)\n"
-               "- ⏹️ Terminer le comptage et voir le résumé de chaque agent\n\n"
-               "*Pour les responsables qui font des bilans de service.*")
-        await interaction.response.send_message(msg, view=ConfirmRoleView("comptage", "📊 Rôle Comptage"), ephemeral=True)
+        await self._show_role_select(interaction, "comptage", "📊 Rôle Comptage", "Peut démarrer et terminer un comptage de service.")
 
     @discord.ui.button(label="⚙️ Rôle Configuration", style=discord.ButtonStyle.secondary, row=1)
     async def cfg_configuration(self, interaction: discord.Interaction, button: discord.ui.Button):
-        msg = ("## ⚙️ Rôle Configuration\n\n"
-               "Les membres avec ce rôle peuvent :\n"
-               "- Accéder au menu de configuration\n"
-               "- Configurer les salons, rôles, mode strict\n\n"
-               "⚠️ *Réservé aux admins du bot. Donne-le avec précaution.*")
-        await interaction.response.send_message(msg, view=ConfirmRoleView("configuration", "⚙️ Rôle Configuration"), ephemeral=True)
+        await self._show_role_select(interaction, "configuration", "⚙️ Rôle Configuration", "Peut accéder au menu de configuration du bot. ⚠️ Donne avec précaution.")
 
     @discord.ui.button(label="🕐 Rôle Pointeuse", style=discord.ButtonStyle.secondary, row=2)
     async def cfg_pointeuse(self, interaction: discord.Interaction, button: discord.ui.Button):
-        msg = ("## 🕐 Rôle Pointeuse\n\n"
-               "Les membres avec ce rôle peuvent :\n"
-               "- ▶️ Prendre leur service\n"
-               "- ⏸️ Mettre en pause / reprendre\n"
-               "- ⏹️ Terminer leur service\n\n"
-               "*Si aucun rôle configuré ici, TOUT LE MONDE peut utiliser la pointeuse.*")
-        await interaction.response.send_message(msg, view=ConfirmRoleView("pointeuse", "🕐 Rôle Pointeuse"), ephemeral=True)
+        await self._show_role_select(interaction, "pointeuse", "🕐 Rôle Pointeuse", "Peut utiliser les boutons de la pointeuse (prendre/pause/fin). Si vide = tout le monde.")
 
     @discord.ui.button(label="💬 Rôle Commande", style=discord.ButtonStyle.secondary, row=2)
     async def cfg_commande(self, interaction: discord.Interaction, button: discord.ui.Button):
-        msg = ("## 💬 Rôle Commande\n\n"
-               "Les membres avec ce rôle peuvent :\n"
-               "- Utiliser `!pointeuse` pour créer le panneau pointeuse\n"
-               "- Utiliser `!gestion` pour créer le panneau de gestion\n\n"
-               "*Pour ceux qui déploient les panneaux dans les salons.*")
-        await interaction.response.send_message(msg, view=ConfirmRoleView("commande", "💬 Rôle Commande"), ephemeral=True)
+        await self._show_role_select(interaction, "commande", "💬 Rôle Commande", "Peut utiliser !pointeuse et !gestion pour déployer les panneaux.")
 
-    async def _show_role_select(self, interaction, perm_key, title):
+    async def _show_role_select(self, interaction, perm_key, title, description=""):
         roles = [r for r in interaction.guild.roles if not r.is_default() and not r.managed]
         if not roles:
             await interaction.response.send_message("❌ Aucun rôle disponible.", ephemeral=True)
@@ -527,10 +495,11 @@ class ConfigMenuView(discord.ui.View):
                 opt.description = "✅ Actif"
             options.append(opt)
         view = RoleSelectView(perm_key, title, options)
-        await interaction.response.send_message(
-            f"**{title}**\nSélectionne un rôle :",
-            view=view, ephemeral=True
-        )
+        current_role_ids = cfg.get(f"roles_{perm_key}", [])
+        current_roles = [interaction.guild.get_role(rid) for rid in current_role_ids]
+        current_str = ", ".join(f"`{r.name}`" for r in current_roles if r) or "`aucun`"
+        msg = f"## {title}\n{description}\n\n**Rôle actuel :** {current_str}\n\nSélectionne un rôle :"
+        await interaction.response.send_message(msg, view=view, ephemeral=True)
 
 class LogChannelModal(discord.ui.Modal, title="Salon des logs"):
     valeur = discord.ui.TextInput(label="ID du salon", placeholder="Clic droit sur le salon → Copier l'ID (vide pour désactiver)", required=False, max_length=30)
