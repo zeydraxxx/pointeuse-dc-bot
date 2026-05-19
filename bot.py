@@ -513,51 +513,22 @@ class ConfigMenuView(discord.ui.View):
         await interaction.response.send_message(msg, view=ConfirmRoleView("commande", "💬 Rôle Commande"), ephemeral=True)
 
     async def _show_role_select(self, interaction, perm_key, title):
-        await interaction.response.send_modal(RoleSearchModal(perm_key, title))
-
-class ConfirmRoleView(discord.ui.View):
-    def __init__(self, perm_key, title):
-        super().__init__(timeout=60)
-        self.perm_key = perm_key
-        self.title = title
-
-    @discord.ui.button(label="⚙️ Configurer ce rôle", style=discord.ButtonStyle.primary)
-    async def configurer(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(RoleSearchModal(self.perm_key, self.title))
-
-class RoleSearchModal(discord.ui.Modal):
-    def __init__(self, perm_key, title):
-        super().__init__(title=f"Recherche rôle — {title[:40]}")
-        self.perm_key = perm_key
-        self.perm_title = title
-        self.recherche = discord.ui.TextInput(
-            label="Nom du rôle (vide = afficher tous)",
-            placeholder="Ex: Shérif, Deputy...",
-            required=False,
-            max_length=50
-        )
-        self.add_item(self.recherche)
-
-    async def on_submit(self, interaction: discord.Interaction):
-        query = self.recherche.value.strip().lower()
         roles = [r for r in interaction.guild.roles if not r.is_default() and not r.managed]
-        if query:
-            roles = [r for r in roles if query in r.name.lower()]
         if not roles:
-            await interaction.response.send_message("❌ Aucun rôle trouvé.", ephemeral=True)
+            await interaction.response.send_message("❌ Aucun rôle disponible.", ephemeral=True)
             return
         roles = roles[:25]
         cfg = load_config()
-        current_ids = cfg.get(f"roles_{self.perm_key}", [])
+        current_ids = cfg.get(f"roles_{perm_key}", [])
         options = []
         for r in roles:
             opt = discord.SelectOption(label=r.name, value=str(r.id))
             if r.id in current_ids:
                 opt.description = "✅ Actif"
             options.append(opt)
-        view = RoleSelectView(self.perm_key, self.perm_title, options)
+        view = RoleSelectView(perm_key, title, options)
         await interaction.response.send_message(
-            f"**{self.perm_title}**\nSélectionne les rôles (plusieurs possibles) :",
+            f"**{title}**\nSélectionne un rôle :",
             view=view, ephemeral=True
         )
 
@@ -591,10 +562,10 @@ class RoleSelectView(discord.ui.View):
         self.perm_key = perm_key
         self.title = title
         select = discord.ui.Select(
-            placeholder=f"Choisir les rôles pour {title}...",
+            placeholder=f"Choisir un rôle...",
             options=options,
             min_values=0,
-            max_values=min(len(options), 25)
+            max_values=1
         )
         select.callback = self.on_select
         self.add_item(select)
@@ -605,11 +576,11 @@ class RoleSelectView(discord.ui.View):
         cfg[f"roles_{self.perm_key}"] = selected_ids
         save_config(cfg)
         if selected_ids:
-            roles = [interaction.guild.get_role(rid) for rid in selected_ids]
-            names = ", ".join(f"`{r.name}`" for r in roles if r)
-            await interaction.response.send_message(f"✅ Rôles configurés : {names}", ephemeral=True)
+            role = interaction.guild.get_role(selected_ids[0])
+            name = f"`{role.name}`" if role else "introuvable"
+            await interaction.response.send_message(f"✅ Rôle configuré : {name}", ephemeral=True)
         else:
-            await interaction.response.send_message("✅ Rôles supprimés (admins seulement).", ephemeral=True)
+            await interaction.response.send_message("✅ Rôle supprimé (admins seulement).", ephemeral=True)
         await refresh_gestion(interaction.guild, load())
 
 # ─── Select Membre & Modal Temps ──────────────────────────────
