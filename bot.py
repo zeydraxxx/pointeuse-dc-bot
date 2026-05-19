@@ -426,7 +426,7 @@ class GestionView(discord.ui.View):
         if not has_perm(interaction, "configuration"):
             await interaction.response.send_message("❌ Permission refusée.", ephemeral=True)
             return
-        await interaction.response.send_message("Que veux-tu configurer ?", view=ConfigMenuView(), ephemeral=True)
+        await interaction.response.send_message("## ⚙️ Que veux-tu configurer ?", view=ConfigMenuView(), ephemeral=False)
 
     def _options(self, guild, data, statuts):
         options = []
@@ -489,8 +489,15 @@ class ConfigMenuView(discord.ui.View):
                f"**Rôles actuels :** {current_str}\n\n"
                f"Mentionnez les rôles à configurer (ex: `@Shérif @Deputy`)\n"
                f"Envoyez `reset` pour supprimer tous les rôles.")
-        await interaction.response.send_message(msg, ephemeral=False)
-        cfg["pending_config"] = {"perm_key": perm_key, "title": title, "channel_id": interaction.channel_id, "user_id": interaction.user.id}
+        sent = await interaction.response.send_message(msg, ephemeral=False)
+        msg_obj = await interaction.original_response()
+        cfg["pending_config"] = {
+            "perm_key": perm_key,
+            "title": title,
+            "channel_id": interaction.channel_id,
+            "user_id": interaction.user.id,
+            "config_msg_id": msg_obj.id
+        }
         save_config(cfg)
 
 class LogChannelModal(discord.ui.Modal, title="Salon des logs"):
@@ -663,11 +670,22 @@ async def on_message(message):
     title = pending["title"]
     cfg.pop("pending_config", None)
 
+    config_msg_id = pending.get("config_msg_id")
+
+    async def delete_config_msg():
+        if config_msg_id:
+            try:
+                m = await message.channel.fetch_message(config_msg_id)
+                await m.delete()
+            except:
+                pass
+
     if message.content.strip().lower() == "reset":
         cfg[f"roles_{perm_key}"] = []
         save_config(cfg)
         await message.delete()
-        confirm = await message.channel.send(f"✅ Rôles **{title}** supprimés.", delete_after=5)
+        await delete_config_msg()
+        await message.channel.send(f"✅ Rôles **{title}** supprimés.")
         await refresh_gestion(message.guild, load())
         return
 
@@ -675,14 +693,16 @@ async def on_message(message):
     if not role_ids:
         save_config(cfg)
         await message.delete()
-        await message.channel.send("❌ Aucun rôle mentionné. Configuration annulée.", delete_after=5)
+        await delete_config_msg()
+        await message.channel.send("❌ Aucun rôle mentionné. Configuration annulée.")
         return
 
     cfg[f"roles_{perm_key}"] = role_ids
     save_config(cfg)
     names = ", ".join(f"`{r.name}`" for r in message.role_mentions)
     await message.delete()
-    await message.channel.send(f"✅ **{title}** → {names}", delete_after=8)
+    await delete_config_msg()
+    await message.channel.send(f"✅ **{title}** → {names}")
     await refresh_gestion(message.guild, load())
     await bot.process_commands(message)
 
