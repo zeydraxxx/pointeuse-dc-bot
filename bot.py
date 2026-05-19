@@ -481,25 +481,17 @@ class ConfigMenuView(discord.ui.View):
         await self._show_role_select(interaction, "commande", "💬 Rôle Commande", "Peut utiliser !pointeuse et !gestion pour déployer les panneaux.")
 
     async def _show_role_select(self, interaction, perm_key, title, description=""):
-        roles = [r for r in interaction.guild.roles if not r.is_default() and not r.managed]
-        if not roles:
-            await interaction.response.send_message("❌ Aucun rôle disponible.", ephemeral=True)
-            return
-        roles = roles[:25]
         cfg = load_config()
-        current_ids = cfg.get(f"roles_{perm_key}", [])
-        options = []
-        for r in roles:
-            opt = discord.SelectOption(label=r.name, value=str(r.id))
-            if r.id in current_ids:
-                opt.description = "✅ Actif"
-            options.append(opt)
-        view = RoleSelectView(perm_key, title, options)
         current_role_ids = cfg.get(f"roles_{perm_key}", [])
         current_roles = [interaction.guild.get_role(rid) for rid in current_role_ids]
-        current_str = ", ".join(f"`{r.name}`" for r in current_roles if r) or "`aucun`"
-        msg = f"## {title}\n{description}\n\n**Rôle actuel :** {current_str}\n\nSélectionne un rôle :"
-        await interaction.response.send_message(msg, view=view, ephemeral=True)
+        current_str = " ".join(r.mention for r in current_roles if r) or "`aucun`"
+        msg = (f"## {title}\n{description}\n\n"
+               f"**Rôles actuels :** {current_str}\n\n"
+               f"Mentionnez les rôles à configurer (ex: `@Shérif @Deputy`)\n"
+               f"Envoyez `reset` pour supprimer tous les rôles.")
+        await interaction.response.send_message(msg, ephemeral=False)
+        cfg["pending_config"] = {"perm_key": perm_key, "title": title, "channel_id": interaction.channel_id, "user_id": interaction.user.id}
+        save_config(cfg)
 
 class LogChannelModal(discord.ui.Modal, title="Salon des logs"):
     valeur = discord.ui.TextInput(label="ID du salon", placeholder="Clic droit sur le salon → Copier l'ID (vide pour désactiver)", required=False, max_length=30)
@@ -523,33 +515,6 @@ class LogChannelModal(discord.ui.Modal, title="Salon des logs"):
                 await interaction.response.send_message("❌ ID invalide.", ephemeral=True)
                 return
         save_config(cfg)
-        await refresh_gestion(interaction.guild, load())
-
-class RoleSelectView(discord.ui.View):
-    def __init__(self, perm_key, title, options):
-        super().__init__(timeout=60)
-        self.perm_key = perm_key
-        self.title = title
-        select = discord.ui.Select(
-            placeholder=f"Choisir un rôle...",
-            options=options,
-            min_values=0,
-            max_values=1
-        )
-        select.callback = self.on_select
-        self.add_item(select)
-
-    async def on_select(self, interaction: discord.Interaction):
-        selected_ids = [int(v) for v in interaction.data["values"]]
-        cfg = load_config()
-        cfg[f"roles_{self.perm_key}"] = selected_ids
-        save_config(cfg)
-        if selected_ids:
-            role = interaction.guild.get_role(selected_ids[0])
-            name = f"`{role.name}`" if role else "introuvable"
-            await interaction.response.send_message(f"✅ Rôle configuré : {name}", ephemeral=True)
-        else:
-            await interaction.response.send_message("✅ Rôle supprimé (admins seulement).", ephemeral=True)
         await refresh_gestion(interaction.guild, load())
 
 # ─── Select Membre & Modal Temps ──────────────────────────────
@@ -679,6 +644,47 @@ async def gestion_cmd(ctx):
     cfg["gestion_msg_id"] = msg.id
     save_config(cfg)
     await ctx.message.delete()
+
+@bot.event
+async def on_message(message):
+    if message.author.bot:
+        await bot.process_commands(message)
+        return
+    cfg = load_config()
+    pending = cfg.get("pending_config")
+    if not pending:
+        await bot.process_commands(message)
+        return
+    if message.channel.id != pending["channel_id"] or message.author.id != pending["user_id"]:
+        await bot.process_commands(message)
+        return
+
+    perm_key = pending["perm_key"]
+    title = pending["title"]
+    cfg.pop("pending_config", None)
+
+    if message.content.strip().lower() == "reset":
+        cfg[f"roles_{perm_key}"] = []
+        save_config(cfg)
+        await message.delete()
+        confirm = await message.channel.send(f"✅ Rôles **{title}** supprimés.", delete_after=5)
+        await refresh_gestion(message.guild, load())
+        return
+
+    role_ids = [r.id for r in message.role_mentions]
+    if not role_ids:
+        save_config(cfg)
+        await message.delete()
+        await message.channel.send("❌ Aucun rôle mentionné. Configuration annulée.", delete_after=5)
+        return
+
+    cfg[f"roles_{perm_key}"] = role_ids
+    save_config(cfg)
+    names = ", ".join(f"`{r.name}`" for r in message.role_mentions)
+    await message.delete()
+    await message.channel.send(f"✅ **{title}** → {names}", delete_after=8)
+    await refresh_gestion(message.guild, load())
+    await bot.process_commands(message)
 
 @tasks.loop(seconds=3)
 async def auto_refresh():
