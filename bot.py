@@ -84,16 +84,20 @@ def has_perm_ctx(ctx, perm):
         return True
     return any(r.id in role_ids for r in ctx.author.roles)
 
-async def send_log(guild, message):
+async def send_log(guild, message, log_type="pointeuse"):
+    """log_type: 'pointeuse' ou 'gestion'"""
     cfg = load_config()
-    ch_id = cfg.get("log_channel_id")
+    key = "log_channel_gestion_id" if log_type == "gestion" else "log_channel_pointeuse_id"
+    ch_id = cfg.get(key)
     if not ch_id:
         return
     ch = guild.get_channel(ch_id)
     if not ch:
         return
-    embed = discord.Embed(description=message, color=0x95a5a6, timestamp=datetime.utcnow())
-    embed.set_footer(text="Pointeuse • Log")
+    color = 0xe74c3c if log_type == "gestion" else 0x1abc9c
+    label = "Gestion" if log_type == "gestion" else "Pointeuse"
+    embed = discord.Embed(description=message, color=color, timestamp=datetime.utcnow())
+    embed.set_footer(text=f"Pointeuse • Log {label}")
     try:
         await ch.send(embed=embed)
     except:
@@ -172,8 +176,12 @@ async def build_gestion_embed(guild, data):
         roles = [guild.get_role(rid) for rid in ids]
         return " ".join(r.mention for r in roles if r) or "`non configuré`"
 
-    log_ch = guild.get_channel(cfg.get("log_channel_id", 0))
-    cfg_lines = [f"📋 Logs : {log_ch.mention if log_ch else '`non configuré`'}"]
+    log_pt = guild.get_channel(cfg.get("log_channel_pointeuse_id", 0))
+    log_gs = guild.get_channel(cfg.get("log_channel_gestion_id", 0))
+    cfg_lines = [
+        f"📋 Logs Pointeuse : {log_pt.mention if log_pt else '`non configuré`'}",
+        f"📋 Logs Gestion : {log_gs.mention if log_gs else '`non configuré`'}",
+    ]
     for key, label in PERM_KEYS.items():
         cfg_lines.append(f"{label} : {fmt_roles(key)}")
     embed.add_field(name="━━━ CONFIGURATION ━━━", value="\n".join(cfg_lines), inline=False)
@@ -385,7 +393,7 @@ class GestionView(discord.ui.View):
         save_config(cfg)
         debut_fmt = datetime.utcnow().strftime("%d/%m/%y à %H:%M:%S")
         await interaction.response.send_message(f"▶️ Comptage démarré le `{debut_fmt}` UTC", ephemeral=True)
-        await send_log(interaction.guild, f"▶️ **{interaction.user.display_name}** a démarré un comptage.")
+        await send_log(interaction.guild, f"▶️ **{interaction.user.display_name}** a démarré un comptage.", log_type="gestion")
         await refresh_gestion(interaction.guild, data)
 
     @discord.ui.button(label="⏹ Terminer comptage", style=discord.ButtonStyle.danger, custom_id="admin_comptage_end", row=2)
@@ -418,7 +426,7 @@ class GestionView(discord.ui.View):
         cfg.pop("comptage_sessions", None)
         save_config(cfg)
         await interaction.response.send_message(embed=embed)
-        await send_log(interaction.guild, f"⏹️ **{interaction.user.display_name}** a terminé le comptage.")
+        await send_log(interaction.guild, f"⏹️ **{interaction.user.display_name}** a terminé le comptage.", log_type="gestion")
         await refresh_gestion(interaction.guild, data)
 
     @discord.ui.button(label="⚙️ Configuration", style=discord.ButtonStyle.secondary, custom_id="admin_config", row=3)
@@ -452,24 +460,32 @@ class ConfigMenuView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=60)
 
-    @discord.ui.button(label="📋 Salon des logs", style=discord.ButtonStyle.secondary, row=0)
-    async def cfg_logs(self, interaction: discord.Interaction, button: discord.ui.Button):
+    @discord.ui.button(label="📋 Logs Pointeuse", style=discord.ButtonStyle.secondary, row=0)
+    async def cfg_logs_pointeuse(self, interaction: discord.Interaction, button: discord.ui.Button):
         cfg = load_config()
-        current = interaction.guild.get_channel(cfg.get("log_channel_id", 0))
+        current = interaction.guild.get_channel(cfg.get("log_channel_pointeuse_id", 0))
         current_str = current.mention if current else "`aucun`"
-        msg = (f"## 📋 Salon des logs\nTous les événements de la pointeuse seront envoyés dans ce salon.\n\n"
+        msg = (f"## 📋 Logs Pointeuse\nActions des membres : prendre service, pause, reprise, fin.\n\n"
                f"**Salon actuel :** {current_str}\n\n"
-               f"Mentionnez le salon (ex: `#logs`) ou envoyez son ID ou son lien.\n"
-               f"Envoyez `reset` pour désactiver les logs.")
-        sent = await interaction.response.send_message(msg, ephemeral=False)
-        msg_obj = await interaction.original_response()
-        cfg["pending_config"] = {
-            "perm_key": "log_channel",
-            "title": "📋 Salon des logs",
-            "channel_id": interaction.channel_id,
-            "user_id": interaction.user.id,
-            "config_msg_id": msg_obj.id
-        }
+               f"Mentionnez le salon (ex: `#logs-pointeuse`) ou envoyez son ID.\n"
+               f"Envoyez `reset` pour désactiver.")
+        msg_obj = await interaction.response.send_message(msg, ephemeral=False)
+        resp = await interaction.original_response()
+        cfg["pending_config"] = {"perm_key": "log_pointeuse", "title": "📋 Logs Pointeuse", "channel_id": interaction.channel_id, "user_id": interaction.user.id, "config_msg_id": resp.id}
+        save_config(cfg)
+
+    @discord.ui.button(label="📋 Logs Gestion", style=discord.ButtonStyle.secondary, row=0)
+    async def cfg_logs_gestion(self, interaction: discord.Interaction, button: discord.ui.Button):
+        cfg = load_config()
+        current = interaction.guild.get_channel(cfg.get("log_channel_gestion_id", 0))
+        current_str = current.mention if current else "`aucun`"
+        msg = (f"## 📋 Logs Gestion\nActions admin : couper/pause/comptage/configuration.\n\n"
+               f"**Salon actuel :** {current_str}\n\n"
+               f"Mentionnez le salon (ex: `#logs-gestion`) ou envoyez son ID.\n"
+               f"Envoyez `reset` pour désactiver.")
+        msg_obj = await interaction.response.send_message(msg, ephemeral=False)
+        resp = await interaction.original_response()
+        cfg["pending_config"] = {"perm_key": "log_gestion", "title": "📋 Logs Gestion", "channel_id": interaction.channel_id, "user_id": interaction.user.id, "config_msg_id": resp.id}
         save_config(cfg)
 
     @discord.ui.button(label="🔧 Rôle Gestion", style=discord.ButtonStyle.secondary, row=0)
@@ -503,7 +519,7 @@ class ConfigMenuView(discord.ui.View):
         save_config(cfg)
         state = "activé" if cfg["strict_mode"] else "désactivé"
         await interaction.response.send_message(f"🔒 Mode strict **{state}**.", ephemeral=True)
-        await send_log(interaction.guild, f"🔒 **{interaction.user.display_name}** a **{state}** le mode strict.")
+        await send_log(interaction.guild, f"🔒 **{interaction.user.display_name}** a **{state}** le mode strict.", log_type="gestion")
         await refresh_gestion(interaction.guild, load())
 
     @discord.ui.button(label="🗑️ Reset config", style=discord.ButtonStyle.danger, custom_id="cfg_reset", row=3)
@@ -511,10 +527,11 @@ class ConfigMenuView(discord.ui.View):
         cfg = load_config()
         for key in list(PERM_KEYS.keys()):
             cfg.pop(f"roles_{key}", None)
-        cfg.pop("log_channel_id", None)
+        cfg.pop("log_channel_pointeuse_id", None)
+        cfg.pop("log_channel_gestion_id", None)
         save_config(cfg)
         await interaction.response.send_message("✅ Configuration réinitialisée.", ephemeral=True)
-        await send_log(interaction.guild, f"🗑️ **{interaction.user.display_name}** a réinitialisé toute la configuration.")
+        await send_log(interaction.guild, f"🗑️ **{interaction.user.display_name}** a réinitialisé toute la configuration.", log_type="gestion")
         await refresh_gestion(interaction.guild, load())
 
     async def _show_role_select(self, interaction, perm_key, title, description=""):
@@ -559,7 +576,7 @@ class LogChannelModal(discord.ui.Modal, title="Salon des logs"):
                 await interaction.response.send_message("❌ ID invalide.", ephemeral=True)
                 return
         save_config(cfg)
-        await send_log(interaction.guild, f"📋 **{interaction.user.display_name}** a modifié le salon de logs.")
+        await send_log(interaction.guild, f"📋 **{interaction.user.display_name}** a modifié le salon de logs.", log_type="gestion")
         await refresh_gestion(interaction.guild, load())
 
 # ─── Select Membre & Modal Temps ──────────────────────────────
@@ -597,7 +614,7 @@ class SelectMembreView(discord.ui.View):
             u.update({"status": "off", "start": None, "pause_start": None, "total_pauses": 0, "bonus_seconds": 0})
             save(data)
             await interaction.response.send_message(f"✅ **{name}** coupé — `{fmt(total)}`.", ephemeral=True)
-            await send_log(interaction.guild, f"⏹️ **{interaction.user.display_name}** a coupé **{name}** — `{fmt(total)}`.")
+            await send_log(interaction.guild, f"⏹️ **{interaction.user.display_name}** a coupé **{name}** — `{fmt(total, log_type="gestion")}`.")
             await refresh_all(interaction.guild)
 
         elif self.action == "pause":
@@ -605,7 +622,7 @@ class SelectMembreView(discord.ui.View):
             data[uid]["pause_start"] = now
             save(data)
             await interaction.response.send_message(f"⏸️ **{name}** mis en pause.", ephemeral=True)
-            await send_log(interaction.guild, f"⏸️ **{interaction.user.display_name}** a mis **{name}** en pause.")
+            await send_log(interaction.guild, f"⏸️ **{interaction.user.display_name}** a mis **{name}** en pause.", log_type="gestion")
             await refresh_all(interaction.guild)
 
         elif self.action == "reprendre":
@@ -614,7 +631,7 @@ class SelectMembreView(discord.ui.View):
             data[uid]["status"] = "working"
             save(data)
             await interaction.response.send_message(f"🟢 **{name}** a repris.", ephemeral=True)
-            await send_log(interaction.guild, f"🟢 **{interaction.user.display_name}** a repris le service de **{name}**.")
+            await send_log(interaction.guild, f"🟢 **{interaction.user.display_name}** a repris le service de **{name}**.", log_type="gestion")
             await refresh_all(interaction.guild)
 
         elif self.action in ("add_time", "remove_time"):
@@ -658,7 +675,7 @@ class TempsModal(discord.ui.Modal):
         name = member.display_name if member else f"ID:{uid}"
         symbol = "➕" if self.action == "add_time" else "➖"
         await interaction.response.send_message(f"{symbol} `{h}h{m:02d}m` {'ajouté à' if self.action == 'add_time' else 'retiré à'} **{name}**", ephemeral=True)
-        await send_log(interaction.guild, f"{symbol} **{interaction.user.display_name}** a {'ajouté' if self.action == 'add_time' else 'retiré'} `{h}h{m:02d}m` à **{name}**.")
+        await send_log(interaction.guild, f"{symbol} **{interaction.user.display_name}** a {'ajouté' if self.action == 'add_time' else 'retiré'} `{h}h{m:02d}m` à **{name}**.", log_type="gestion")
         await refresh_all(interaction.guild)
 
 # ─── Commandes ────────────────────────────────────────────────
@@ -718,13 +735,14 @@ async def on_message(message):
             except:
                 pass
 
-    if perm_key == "log_channel":
+    if perm_key in ("log_channel", "log_pointeuse", "log_gestion"):
+        cfg_key = "log_channel_pointeuse_id" if perm_key in ("log_channel", "log_pointeuse") else "log_channel_gestion_id"
         if message.content.strip().lower() == "reset":
-            cfg.pop("log_channel_id", None)
+            cfg.pop(cfg_key, None)
             save_config(cfg)
             await message.delete()
             await delete_config_msg()
-            await send_log(message.guild, f"📋 **{message.author.display_name}** a désactivé les logs.")
+            await send_log(message.guild, f"📋 **{message.author.display_name}** a désactivé **{title}**.", log_type="gestion")
             await refresh_gestion(message.guild, load())
             return
         ch = None
@@ -740,11 +758,11 @@ async def on_message(message):
             await message.delete()
             await delete_config_msg()
             return
-        cfg["log_channel_id"] = ch.id
+        cfg[cfg_key] = ch.id
         save_config(cfg)
         await message.delete()
         await delete_config_msg()
-        await send_log(message.guild, f"📋 **{message.author.display_name}** a configuré le salon de logs → {ch.mention}.")
+        await send_log(message.guild, f"📋 **{message.author.display_name}** a configuré **{title}** → {ch.mention}.", log_type="gestion")
         await refresh_gestion(message.guild, load())
         return
 
@@ -753,7 +771,7 @@ async def on_message(message):
         save_config(cfg)
         await message.delete()
         await delete_config_msg()
-        await send_log(message.guild, f"⚙️ **{message.author.display_name}** a supprimé les rôles de **{title}**.")
+        await send_log(message.guild, f"⚙️ **{message.author.display_name}** a supprimé les rôles de **{title}**.", log_type="gestion")
         await refresh_gestion(message.guild, load())
         return
 
@@ -769,7 +787,7 @@ async def on_message(message):
     names = ", ".join(f"`{r.name}`" for r in message.role_mentions)
     await message.delete()
     await delete_config_msg()
-    await send_log(message.guild, f"⚙️ **{message.author.display_name}** a configuré **{title}** → {names}.")
+    await send_log(message.guild, f"⚙️ **{message.author.display_name}** a configuré **{title}** → {names}.", log_type="gestion")
     await refresh_gestion(message.guild, load())
     await bot.process_commands(message)
 
