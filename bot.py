@@ -454,7 +454,23 @@ class ConfigMenuView(discord.ui.View):
 
     @discord.ui.button(label="📋 Salon des logs", style=discord.ButtonStyle.secondary, row=0)
     async def cfg_logs(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(LogChannelModal())
+        cfg = load_config()
+        current = interaction.guild.get_channel(cfg.get("log_channel_id", 0))
+        current_str = current.mention if current else "`aucun`"
+        msg = (f"## 📋 Salon des logs\nTous les événements de la pointeuse seront envoyés dans ce salon.\n\n"
+               f"**Salon actuel :** {current_str}\n\n"
+               f"Mentionnez le salon (ex: `#logs`) ou envoyez son ID ou son lien.\n"
+               f"Envoyez `reset` pour désactiver les logs.")
+        sent = await interaction.response.send_message(msg, ephemeral=False)
+        msg_obj = await interaction.original_response()
+        cfg["pending_config"] = {
+            "perm_key": "log_channel",
+            "title": "📋 Salon des logs",
+            "channel_id": interaction.channel_id,
+            "user_id": interaction.user.id,
+            "config_msg_id": msg_obj.id
+        }
+        save_config(cfg)
 
     @discord.ui.button(label="🔧 Rôle Gestion", style=discord.ButtonStyle.secondary, row=0)
     async def cfg_gestion(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -701,6 +717,36 @@ async def on_message(message):
                 await m.delete()
             except:
                 pass
+
+    if perm_key == "log_channel":
+        if message.content.strip().lower() == "reset":
+            cfg.pop("log_channel_id", None)
+            save_config(cfg)
+            await message.delete()
+            await delete_config_msg()
+            await send_log(message.guild, f"📋 **{message.author.display_name}** a désactivé les logs.")
+            await refresh_gestion(message.guild, load())
+            return
+        ch = None
+        if message.channel_mentions:
+            ch = message.channel_mentions[0]
+        else:
+            import re
+            match = re.search(r"(\d{17,20})", message.content)
+            if match:
+                ch = message.guild.get_channel(int(match.group(1)))
+        if not ch:
+            save_config(cfg)
+            await message.delete()
+            await delete_config_msg()
+            return
+        cfg["log_channel_id"] = ch.id
+        save_config(cfg)
+        await message.delete()
+        await delete_config_msg()
+        await send_log(message.guild, f"📋 **{message.author.display_name}** a configuré le salon de logs → {ch.mention}.")
+        await refresh_gestion(message.guild, load())
+        return
 
     if message.content.strip().lower() == "reset":
         cfg[f"roles_{perm_key}"] = []
